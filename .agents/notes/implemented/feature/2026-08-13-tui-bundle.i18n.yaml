@@ -1,6 +1,6 @@
 # Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
-#   pnpm run verify-translation-pairing --write docs/event-producer-consumer.md
-event-producer-consumer.md: 39e4b494c68caa4ab8e2358bcdfd436a2eef3b28
-event-producer-consumer.zh.md: 41efbc3c9d6762f652e958d737c9cf466fc3f2f5
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-08-13-tui-bundle.md
+2026-08-13-tui-bundle.md: 9ee6b07e705e71116fdf8f972762544a19bf7e07
+2026-08-13-tui-bundle.zh.md: 08ef7edf74799a78f6483f952657ec8f542bb429

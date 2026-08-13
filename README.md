@@ -14,13 +14,14 @@ DeepSeek Harness is currently in _developer preview_ and is iterating rapidly. *
 
 ### Run from `npm`
 
-Install `Node.js`, then run:
+Install `Node.js`, then choose a surface:
 
 ```sh
 npx @deepseek-ai/dsh web
+npx @deepseek-ai/dsh --profile tui
 ```
 
-The command starts the Web UI, served at `http://127.0.0.1:3080` by default. See [Web UI guide](docs/user/guide/index.md).
+The Web UI is served at `http://127.0.0.1:3080` by default. The terminal beta accepts an optional first prompt, for example `npx @deepseek-ai/dsh --profile tui "run the tests"`. See the [Web UI guide](docs/user/guide/index.md) or [terminal bundle reference](packages/bundle/tui/README.md).
 
 ### Run from source
 
@@ -32,6 +33,7 @@ cd deepseek-harness
 pnpm install
 pnpm run build
 pnpm dsh web
+pnpm dsh --profile tui
 ```
 
 ## Community and support

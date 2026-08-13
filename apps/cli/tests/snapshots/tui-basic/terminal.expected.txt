@@ -1,0 +1,8 @@
+dsh · tui-snapshot/tui-snapshot
+{{cwd}} · /help for commands
+
+› Prove the interactive terminal beta with one tool round trip.
+● bash {"command":"printf TUI_BETA_READY","description":"Prove the terminal tool round…
+  └ TUI_BETA_READY
+Terminal beta ready: TUI_BETA_READY
+─ {{elapsed}}s · ↑18 ↓8
