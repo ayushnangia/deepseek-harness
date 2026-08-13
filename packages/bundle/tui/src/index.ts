@@ -22,7 +22,7 @@ import { createInterface, type Interface } from 'node:readline'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
-import type { Agent, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
+import type { Agent, AgentRegistry, CreateAgentOptions, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { StreamChunk } from '@deepseek-ai/dsh-llm'
@@ -279,6 +279,23 @@ Other /commands dispatch to the plugin command registry (listed below when compo
 While the agent is running: a typed line steers the nearest step, Ctrl+C cancels the turn.
 When the agent asks a question or requests approval, the prompt switches to that decision.`
 
+function tuiAgentRequest(selection: NonNullable<ModelSelectionRef['current']>): CreateAgentOptions {
+  return {
+    sessionId: SessionId(`session-${randomUUID()}`),
+    meta: { cwd: process.cwd() },
+    agentOptions: { provider: selection.provider, model: selection.model },
+    setup: (agentCtx) => {
+      installModelSelection(agentCtx, { current: selection, assembled: undefined })
+    },
+  }
+}
+
+async function createTuiAgent(agents: AgentRegistry, selection: NonNullable<ModelSelectionRef['current']>): Promise<Agent> {
+  const handle = await agents.create(tuiAgentRequest(selection))
+  await handle.agent.whenIdle()
+  return handle.agent
+}
+
 /**
  * Run the interactive session over a freshly created Agent and request
  * process exit when the user leaves.
@@ -290,26 +307,20 @@ async function run(ctx: Context, firstPrompt: string, io: TuiIo): Promise<void> 
   // Loader siblings mount concurrently. Await the complete application before
   // creating an Agent so its scoped tools and adapters are not half-composed.
   await ctx.get('loader')?.await()
-  const agents = ctx.get('agents')
-  const defaultModel = ctx.get('agentDefaultModel')
-  const sessions = ctx.get('sessions')
+  const runtime = {
+    agentRegistry: ctx.get('agents'),
+    modelDefaults: ctx.get('agentDefaultModel'),
+    sessionStore: ctx.get('sessions'),
+  }
   // Early process shutdown can dispose the tree while settlement is pending.
-  if (agents === undefined || defaultModel === undefined || sessions === undefined) return
+  if (runtime.agentRegistry === undefined || runtime.modelDefaults === undefined || runtime.sessionStore === undefined) return
+  const { agentRegistry, modelDefaults, sessionStore } = runtime
 
-  const selection = defaultModel.currentSelection()
+  const selection = modelDefaults.currentSelection()
   // This bundle composes no preset roster, so the model-facing rows sit in the
   // host plane and the agent reads them from the global layer (same stance as
   // the one-shot bundle).
-  const { agent } = await agents.create({
-    sessionId: SessionId(`session-${randomUUID()}`),
-    meta: { cwd: process.cwd() },
-    agentOptions: { provider: selection.provider, model: selection.model },
-    setup: (agentCtx) => {
-      const selected: ModelSelectionRef = { current: selection, assembled: undefined }
-      installModelSelection(agentCtx, selected)
-    },
-  })
-  await agent.whenIdle()
+  const agent = await createTuiAgent(agentRegistry, selection)
 
   const ui = palette()
   const renderer = new Renderer(io, ui)
@@ -331,7 +342,7 @@ async function run(ctx: Context, firstPrompt: string, io: TuiIo): Promise<void> 
   const commandRuntime = ctx.get('commands')
   loop(agent, rl, io, ui, {
     firstPrompt,
-    flush: () => sessions.flush(agent.session),
+    flush: () => sessionStore.flush(agent.session),
     release: () => { internals.stdin.unref?.() },
     ...commandRuntime === undefined ? {} : {
       commands: {
