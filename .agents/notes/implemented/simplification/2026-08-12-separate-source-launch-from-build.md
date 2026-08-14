@@ -12,7 +12,7 @@ Source modules reached through tsx and browser modules reached through built bun
 
 ## Decision
 
-The root `dsh` script only runs `node --import tsx/esm apps/cli/src/bin.ts`. `pnpm run build` remains the separate operation that generates package and frontend artifacts. Source users run the build before the first production-like launch and whenever frontend or client-plugin artifacts need refreshing.
+The root `dsh` script only runs the built `apps/cli/lib/bin.js`, and the explicit `dsh:source` script only runs `node --import tsx/esm apps/cli/src/bin.ts`. Neither launcher builds. `pnpm run build` remains the separate operation that generates package and frontend artifacts; checkout users run it after a fresh checkout and whenever package, frontend, or Client plugin artifacts need refreshing.
 
 Missing Typert host artifacts fail profile boot through module-resolution errors without a build instruction. Once those host artifacts exist, missing frontend and client-plugin artifacts fail at startup with diagnostics that direct the user to `pnpm run build`. The launcher does not validate artifact freshness: existing stale frontend or client-plugin bundles are accepted and can run older browser code until the next build. After package Node halves have been built once, `pnpm run dev:web` rebuilds only packages that declare `dsh.client`; it keeps client-plugin bundles current and activates their hot-reload path, but does not rebuild the frontend shell.
 
@@ -28,11 +28,11 @@ This decision owns build scheduling only. The [tsx ESM source-launch decision](.
 
 ## Consequences
 
-- Repeated source launches do not wait for a complete repository build, and build output is not mixed with CLI output.
-- Source users own artifact freshness. Missing artifacts stop startup, but only frontend and client-plugin failures direct users to `pnpm run build`; existing stale frontend and client-plugin bundles can silently serve older browser code.
-- TUI, Web, and headless selection, argument forwarding, environment inheritance, and the tsx ESM launch vector remain unchanged.
+- Repeated checkout launches do not wait for a complete repository build, and build output is not mixed with CLI output.
+- Checkout users own artifact freshness. Missing artifacts stop startup, but only frontend and Client plugin failures direct users to `pnpm run build`; existing stale frontend and Client plugin bundles can silently serve older browser code.
+- TUI, Web, and headless selection, argument forwarding, and environment inheritance are shared by the built default and the explicit tsx ESM source vector.
 - The root onboarding and CLI reference show build and launch as separate commands and document the stale-artifact behavior.
 
 ## Verification
 
-`apps/cli/tests/source-launch.compat.spec.ts` pins the exact root package command and exercises the production source-launch vector. `packages/bundle/web-app/tests/web-app.spec.ts` and `packages/client/modules/tests/node-half.client.spec.ts` pin the missing-artifact diagnostics.
+`apps/cli/tests/source-launch.compat.spec.ts` pins both root package commands and exercises the explicit source-launch vector. `apps/cli/tests/built-bin.e2e.ts` exercises the compiled package bin under plain Node. `packages/bundle/web-app/tests/web-app.spec.ts` and `packages/client/modules/tests/node-half.client.spec.ts` pin the missing-artifact diagnostics.

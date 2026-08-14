@@ -1,0 +1,19 @@
+# The product-profile snapshot keeps the shipped tree and replaces only the
+# external model boundary. The test copies the adapter below into this
+# profile-relative location so source and packed-artifact resolution agree.
+- id: agent-default-model
+  config:
+    provider: tui-snapshot
+    model: tui-snapshot
+
+- id: session-title-llm
+  disabled: true
+
+- id: session-persistence-jsonl
+  config:
+    root: !!js dshHomePath('sessions')
+    compression: none
+
+- insert:
+    - id: tui-snapshot-llm
+      name: './snapshot-fixtures/tui-snapshot-llm.ts'

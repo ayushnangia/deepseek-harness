@@ -12,15 +12,16 @@ DeepSeek Harness 目前处于 _开发者预览_ 阶段，正在快速迭代。**
 
 ## 运行
 
-### 通过 `npm` 运行
+### 安装终端 beta
 
-安装 `Node.js`，然后运行：
+安装 `Node.js`，再一次性安装编译好的 CLI（命令行界面），之后即可在任意目录运行 `dsh`：
 
 ```sh
-npx @deepseek-ai/dsh web
+npm install --global @deepseek-ai/dsh@next
+dsh --profile tui
 ```
 
-该命令会启动 Web UI，默认地址为 `http://127.0.0.1:3080`。详见 [Web UI 指南](docs/user/guide/index.md)。
+如需在不安装的情况下试用，请运行 `npx --yes @deepseek-ai/dsh@next --profile tui`。终端 beta 可接收可选的首个提示词，例如 `dsh --profile tui "run the tests"`。Web UI 仍可通过 `dsh web` 启动，默认地址为 `http://127.0.0.1:3080`。详见 [Web UI 指南](docs/user/guide/index.md)或[终端组合包参考](packages/bundle/tui/README.md)。
 
 ### 从源码运行
 
@@ -32,7 +33,10 @@ cd deepseek-harness
 pnpm install
 pnpm run build
 pnpm dsh web
+pnpm dsh --profile tui
 ```
+
+checkout 中的命令会运行已编译的 `apps/cli/lib/bin.js`，与安装后的包保持一致。明确需要 TypeScript 源码启动器的贡献者可使用 `pnpm dsh:source <args...>`。
 
 ## 社区与支持
 

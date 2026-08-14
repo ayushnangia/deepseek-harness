@@ -2798,6 +2798,22 @@ export type ToolPresentationMode = 'native' | 'code' | 'both'
 
 来源：[`packages/core/tools/src/index.ts:654`](../packages/core/tools/src/index.ts)
 
+<a id="deepseek-aidsh-tui"></a>
+
+## `@deepseek-ai/dsh-tui`
+
+需要：`agentDefaultModel` · `agents` · `sessions`
+
+```ts config-catalog
+/** Plugin config: the optional first prompt resolved from this app's injected provider service. */
+export interface Config {
+  /** The first prompt to submit before reading terminal input; empty means none. */
+  prompt: string
+}
+```
+
+来源：[`packages/bundle/tui/src/index.ts:55`](../packages/bundle/tui/src/index.ts)
+
 <a id="deepseek-aidsh-typert-loader"></a>
 
 ## `@deepseek-ai/dsh-typert-loader`

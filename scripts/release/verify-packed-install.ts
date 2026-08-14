@@ -99,12 +99,12 @@ function main(): void {
 
     const environment = consumerEnvironment(consumerRoot)
     console.log(`release verify-packed-install: installing ${String(packed.size)} tarball(s) into ${consumerRoot}`)
-    // Optional dependencies are omitted: the Landlock platform packages behind
-    // them need a musl toolchain and one build per architecture, and a consumer
-    // that cannot install them must still start — which is what optional means
-    // here. Their entry package is a plain dependency of dsh-sandbox-local, so
-    // its tarball is supplied through --from.
-    capture('npm', ['install', '--no-audit', '--no-fund', '--package-lock=false', '--omit=optional'],
+    // Keep optional dependencies because several external native modules use
+    // platform-specific optional packages to ship their prebuilt binaries. A
+    // normal consumer install keeps those packages too; omitting them turns
+    // this check into an unrelated local compiler/linker test. The release
+    // workflow supplies the matching Landlock package through --from.
+    capture('npm', ['install', '--no-audit', '--no-fund', '--package-lock=false'],
       { cwd: consumerRoot, env: environment })
 
     const bin = join(consumerRoot, 'node_modules', ...entry.packageName.split('/'), entry.binPath)
@@ -113,6 +113,13 @@ function main(): void {
       throw new Error(`installed ${entry.packageName} --version reported ${JSON.stringify(version)}, expected ${expected.version}`)
     }
     console.log(`release verify-packed-install: installed ${entry.packageName} reports ${version}`)
+    for (const probe of entry.probes) {
+      const stdout = capture(process.execPath, [bin, ...probe.args], { cwd: consumerRoot, env: environment })
+      if (!stdout.includes(probe.stdoutIncludes)) {
+        throw new Error(`installed ${entry.packageName} ${probe.args.join(' ')} omitted ${JSON.stringify(probe.stdoutIncludes)}`)
+      }
+      console.log(`release verify-packed-install: installed ${entry.packageName} ${probe.args.join(' ')} passed`)
+    }
   } finally {
     rmSync(consumerRoot, { recursive: true, force: true })
   }

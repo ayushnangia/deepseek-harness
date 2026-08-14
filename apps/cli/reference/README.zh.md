@@ -79,6 +79,8 @@ dsh web --help
 
 通过 `dsh plugin --profile <name> add <package-or-git-spec>` 安装外部插件组合包。安装的包拥有其依赖，并贡献其声明的 `cordis.patch.yml` 层。CLI 还随附 `@deepseek-ai/dsh-mcp-client` 作为供 patch 层使用的依赖，但默认不启用 MCP 服务器，因为每条服务器命令都是 agent（智能体）沙箱之外的受信任可执行代码。
 
-## 源码执行
+## Checkout 执行
 
-请在仓库根目录中，于全新 checkout 之后及产物需要更新时单独运行 `pnpm run build`，然后使用 `pnpm dsh <args...>`。`package.json` 中的脚本不会构建，而是通过 `node --import tsx/esm` 启动 `apps/cli/src/bin.ts`，并转发所有参数。Typert Host 产物缺失时，profile 启动会因不含构建指引的模块解析错误而失败。这些 Host 产物存在后，如果前端或 Client plugin 组合包缺失，启动会失败并提示运行 `pnpm run build`。启动器不会检查产物是否为最新，因此已有的陈旧组合包可能继续运行旧版浏览器代码，直至重新构建。该进程会继承启动环境；当支持环境代理的 Node 版本必须遵循 `HTTP_PROXY` 和 `HTTPS_PROXY` 时，请设置 `NODE_USE_ENV_PROXY=1`。安装形式会直接启动构建后的 `apps/cli/lib/bin.js`，不会重新构建仓库。
+请在仓库根目录中，于全新 checkout 之后及产物需要更新时运行 `pnpm run build`，然后使用 `pnpm dsh <args...>`。根脚本会在普通 Node 下运行 `apps/cli/lib/bin.js`，与安装后的包完全一致；它会转发所有参数，但不会重新构建。因此，缺失或陈旧的包、前端或 Client plugin 产物需要显式重新构建。该进程会继承启动环境；当支持环境代理的 Node 版本必须遵循 `HTTP_PROXY` 和 `HTTPS_PROXY` 时，请设置 `NODE_USE_ENV_PROXY=1`。
+
+`pnpm dsh:source <args...>` 是明确的仅供贡献者使用的源码路径。它会通过 `node --import tsx/esm` 启动 `apps/cli/src/bin.ts`，但不会构建；已生成的 Host、前端和 Client plugin 产物仍是独立输入，因此仍可能需要运行 `pnpm run build`。

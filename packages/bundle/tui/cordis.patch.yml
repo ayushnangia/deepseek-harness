@@ -1,0 +1,36 @@
+# The dsh-tui bundle patch: an interactive terminal REPL directly over
+# dsh-base. It mounts no Host, HTTP server, Web runtime, or browser plugin.
+# An ordinary provider plugin injects `cmdlineArgs`, parses the optional
+# first-prompt positional (`dsh --profile tui "<prompt>"`) and this app's
+# --help, then the REPL driver creates an Agent through the core registry and
+# streams its session events to the terminal until the user exits.
+
+- id: system-prompt
+  config:
+    persona: >-
+      You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.
+
+# The shared module-reload HMR row stays off; the launcher's watch-only
+# fallback still keeps the user patch layers live until the run exits.
+- id: hmr
+  disabled: true
+
+- id: tools
+  config:
+    # Keep the same temporary process-wide Code Mode opt-in as the Web surface.
+    mode: !!js process.env.DSH_TOOLS_MODE
+
+- insert:
+    # Code Mode is a core execution capability, not a Web component.
+    - id: code-runtime
+      name: '@deepseek-ai/dsh-code-runtime-worker-thread'
+
+    - id: tui-startup
+      name: '@deepseek-ai/dsh-tui/startup'
+
+    # Reads its optional first prompt from the ordinary tuiStartup provider.
+    - id: tui-runner
+      name: '@deepseek-ai/dsh-tui'
+      inject: [tuiStartup]
+      config:
+        prompt: !!js ctx.tuiStartup.prompt
