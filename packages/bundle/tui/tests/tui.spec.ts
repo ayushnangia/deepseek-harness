@@ -2,6 +2,7 @@
 
 import { PassThrough, Writable } from 'node:stream'
 import { afterEach, describe, expect, it } from 'vitest'
+import type { Terminal } from '@earendil-works/pi-tui'
 import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry, { Inbox } from '@deepseek-ai/dsh-agent'
 import type { Agent, AgentHandle, CreateAgentOptions } from '@deepseek-ai/dsh-agent'
@@ -39,7 +40,35 @@ interface Script {
 interface BenchOptions {
   prompt?: string
   isTTY?: boolean
+  interactive?: boolean
   commands?: unknown
+}
+
+/** Deterministic terminal boundary for exercising Pi's real renderer and editor. */
+class TestTerminal implements Terminal {
+  readonly columns = 88
+  readonly rows = 30
+  readonly kittyProtocolActive = false
+  private input: ((data: string) => void) | undefined
+
+  constructor(private readonly output: (chunk: string) => void) {}
+
+  start(onInput: (data: string) => void, _onResize: () => void): void { this.input = onInput }
+  stop(): void { this.input = undefined }
+  drainInput(): Promise<void> { return Promise.resolve() }
+  write(data: string): void { this.output(data) }
+  moveBy(_lines: number): void {}
+  hideCursor(): void {}
+  showCursor(): void {}
+  clearLine(): void {}
+  clearFromCursor(): void {}
+  clearScreen(): void {}
+  setTitle(_title: string): void {}
+  setProgress(_active: boolean): void {}
+
+  send(data: string): void {
+    for (const character of data) this.input?.(character === '\n' ? '\r' : character)
+  }
 }
 
 /** Append one completed turn whose only output is `text` streamed in a single chunk. */
@@ -62,6 +91,8 @@ interface Driven {
   prompts: UserMessage[]
   steered: UserMessage[]
   cancelled: unknown[]
+  keys(data: string): void
+  agent(): Agent
   session(): Session
 }
 
@@ -75,6 +106,7 @@ async function bench(script: Script = {}, options: BenchOptions = {}): Promise<D
   const steered: UserMessage[] = []
   const cancelled: unknown[] = []
   let sessionRef: Session | undefined
+  let agentRef: Agent | undefined
   ctx.agents.setFactory({
     async createAgent(ownerCtx: Context, createOptions: CreateAgentOptions): Promise<AgentHandle> {
       const session = ctx.sessions.create(createOptions.sessionId, {
@@ -102,6 +134,7 @@ async function bench(script: Script = {}, options: BenchOptions = {}): Promise<D
         inject: () => {},
         whenIdle: () => idle,
       } satisfies Partial<Agent>)
+      agentRef = agent
       await createOptions.setup?.(agentCtx)
       ctx.agents.register(agent)
       return { agent, dispose: () => Promise.resolve() }
@@ -113,14 +146,20 @@ async function bench(script: Script = {}, options: BenchOptions = {}): Promise<D
   const stdin = new PassThrough()
   let out = ''
   let err = ''
+  let terminal: TestTerminal | undefined
   const order: string[] = []
   ctx.on('session/flush', () => { order.push('flush') })
-  internals.stdin = stdin
+  internals.stdin = Object.assign(stdin, options.interactive === true ? { isTTY: true } : {})
   internals.stdout = Object.assign(
     new Writable({ write: (chunk: unknown, _encoding, callback) => { out += String(chunk); callback() } }),
     options.isTTY === true ? { isTTY: true } : {},
   )
   internals.stderr = { write: (chunk: string) => { err += chunk; return true } }
+  internals.interactive = options.interactive
+  internals.terminal = () => {
+    terminal = new TestTerminal((chunk) => { out += chunk })
+    return terminal
+  }
   const exit = new Promise<number>((resolve) => {
     ctx.provide('appExit', (code: number) => { order.push('exit'); resolve(code) })
   })
@@ -135,6 +174,14 @@ async function bench(script: Script = {}, options: BenchOptions = {}): Promise<D
     prompts,
     steered,
     cancelled,
+    keys: (data: string) => {
+      if (terminal === undefined) throw new Error('interactive terminal not started')
+      terminal.send(data)
+    },
+    agent: () => {
+      if (agentRef === undefined) throw new Error('agent not created yet')
+      return agentRef
+    },
     session: () => {
       if (sessionRef === undefined) throw new Error('agent not created yet')
       return sessionRef
@@ -143,6 +190,67 @@ async function bench(script: Script = {}, options: BenchOptions = {}): Promise<D
 }
 
 describe('tui runner', () => {
+  it('uses Pi differential rendering and the bordered editor for a real TTY', async () => {
+    const test = await bench({
+      afterPrompt(session, message) {
+        session.append('turn/start', { turn: 1 })
+        session.append('user/message', message, { surfaceOp: 'append' })
+        session.append('step/start', { turn: 1, step: 1 })
+        session.append('assistant/chunk', { turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'Interactive answer' } })
+        session.append('assistant/message', {
+          turn: 1,
+          step: 1,
+          message: createAssistantMessage({
+            content: [{ type: 'text', text: 'Interactive answer' }],
+            source: { provider: 'test-provider', model: 'test-model' },
+          }),
+          usage: { inputTokens: 42, outputTokens: 7 },
+        }, { surfaceOp: 'append' })
+        session.append('step/end', { turn: 1, step: 1 })
+        session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+      },
+    }, { isTTY: true, interactive: true })
+    await new Promise(resolve => setTimeout(resolve, 25))
+    expect(test.out()).toContain('Shift+Enter newline')
+    expect(test.out()).toContain('DeepSeek Harness coding agent')
+    expect(test.out()).toContain('test-provider/test-model')
+    expect(test.out()).toContain('─'.repeat(20))
+
+    test.keys('hello from editor\n')
+    await new Promise(resolve => setTimeout(resolve, 25))
+    await until(() => test.out().includes('Interactive answer'))
+    expect(test.prompts).toHaveLength(1)
+    expect(test.prompts[0]).toMatchObject({
+      content: [{ type: 'text', text: 'hello from editor' }],
+      source: { kind: 'user' },
+    })
+    expect(test.out()).toContain('↑42 ↓7')
+
+    test.keys('/exit\n')
+    expect(await test.exit).toBe(0)
+    expect(test.order).toEqual(['flush', 'exit'])
+    await test.ctx.fiber.dispose()
+  })
+
+  it('answers tool approvals through the same Pi editor', async () => {
+    const test = await bench({}, { isTTY: true, interactive: true })
+    await until(() => test.out().includes('Shift+Enter newline'))
+
+    const decision = test.ctx.waterfall(
+      'approval/request',
+      { agent: test.agent(), toolName: 'bash', reason: 'run the project checks' },
+      () => Promise.resolve('unavailable' as const),
+    )
+    await until(() => test.out().includes('approve once? [y/N]'))
+    expect(test.out()).toContain('bash requests approval: run the project checks')
+
+    test.keys('y\n')
+    await expect(decision).resolves.toBe('allowed-once')
+    test.keys('/exit\n')
+    expect(await test.exit).toBe(0)
+    await test.ctx.fiber.dispose()
+  })
+
   it('streams a full turn as a projection of committed events and exits on /exit with a drained flush', async () => {
     const test = await bench({
       afterPrompt(session) {

@@ -1,35 +1,40 @@
 /**
- * @deepseek-ai/dsh-tui — interactive terminal REPL over the direct Agent
- * driver. The bundle patch rides over dsh-base without Host, HTTP, or browser
- * plugins; this runner creates one Agent through the core registry, streams
- * its session events to the terminal as they commit, and reads prompts from
- * stdin until the user exits.
+ * @deepseek-ai/dsh-tui — interactive terminal application over the direct
+ * Agent driver. A real TTY gets a Pi component tree with differential
+ * rendering and a multiline editor; pipes and redirects get an append-only
+ * readline transcript. Both modes drive the same Agent and session log.
  *
- * Rendering is a projection of the durable session log: every line the
- * terminal shows comes from a committed `session/event`, so the display can
- * never disagree with what persistence stored.
+ * Conversation rows project the durable session log; header, footer,
+ * commands, and interaction prompts remain presentation-only. Both renderers
+ * therefore show the same model-visible conversation and lifecycle facts.
  *
- * Terminal behavior while a turn is running: a typed line becomes steering
- * for the nearest step (`agent.steer`), Ctrl+C cancels the active turn, and
- * the prompt returns at quiescence. At an idle prompt, Ctrl+C and Ctrl+D end
- * the session after a final flush.
+ * Submitted text during a turn becomes steering for the nearest step
+ * (`agent.steer`). Ctrl+C cancels active work; Ctrl+D drains it. Idle exit
+ * waits for the Agent, flushes the session, and restores terminal state.
  *
  * @module @deepseek-ai/dsh-tui
  */
 
 import { randomUUID } from 'node:crypto'
 import { createInterface, type Interface } from 'node:readline'
+import { ProcessTerminal, type Terminal } from '@earendil-works/pi-tui'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import type { Agent, AgentRegistry, CreateAgentOptions, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { StreamChunk } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
-import type { CommandDescriptor, CommandExecution } from '@deepseek-ai/dsh-commands'
 import { Prompter, installInteraction } from './prompter.ts'
+import { InteractiveSession } from './interactive.ts'
+import { figure, isErrorResult, oneLine, textOf } from './render-utils.ts'
+import {
+  SessionDriver,
+  type NoticeTone,
+  type SessionDriverHooks,
+  type SessionSurface,
+} from './session-driver.ts'
 // Empty type imports carry the loader Context merge for the settlement await,
 // the cmdline Context merge for the appExit host value, the commands Context
 // merge for the registry dispatch, and the plan-mode/compaction SessionEventMap
@@ -67,14 +72,20 @@ interface TuiIo {
 /** The process streams the runner reads and writes; tests substitute captures. */
 export const internals: {
   /** Readline input. `unref` is present on socket stdin (pipe/TTY parents) and absent for file redirects. */
-  stdin: NodeJS.ReadableStream & { unref?(): void }
+  stdin: NodeJS.ReadableStream & { isTTY?: boolean; unref?(): void }
   /** Readline echo target and the renderer's stream; `isTTY` gates the color palette. */
   stdout: NodeJS.WritableStream & { isTTY?: boolean }
   stderr: TuiIo['stderr']
+  /** Construct the Pi terminal adapter after the runner selects interactive mode. */
+  terminal(): Terminal
+  /** Test-only mode override; `undefined` selects from the real stream capabilities. */
+  interactive: boolean | undefined
 } = {
   stdin: process.stdin,
   stdout: process.stdout,
   stderr: process.stderr,
+  terminal: () => new ProcessTerminal(),
+  interactive: undefined,
 }
 
 /** One ANSI SGR painter; identity when the stream is not an interactive terminal or NO_COLOR is set. */
@@ -87,6 +98,12 @@ interface Palette {
   cyan: Paint
   yellow: Paint
   red: Paint
+  userMessage: Paint
+}
+
+/** Whether this process-facing output supports terminal color. */
+function colorEnabled(): boolean {
+  return (internals.stdout.isTTY ?? false) && (process.env.NO_COLOR ?? '') === ''
 }
 
 /**
@@ -94,47 +111,21 @@ interface Palette {
  * @returns SGR-wrapping painters, or identity painters when color is unavailable or refused.
  */
 function palette(): Palette {
-  const enabled = (internals.stdout.isTTY ?? false) && (process.env.NO_COLOR ?? '') === ''
+  const enabled = colorEnabled()
   const paint = (code: string): Paint => enabled
     ? text => `\u001B[${code}m${text}\u001B[0m`
     : text => text
-  return { dim: paint('2'), bold: paint('1'), cyan: paint('36'), yellow: paint('33'), red: paint('31') }
+  const background = Number(process.env.COLORFGBG?.split(';').at(-1))
+  const lightBackground = Number.isFinite(background) && background >= 7
+  const userMessage = enabled
+    ? paint(lightBackground ? '48;5;254;30' : '48;5;236;37')
+    : (text: string): string => text
+  return { dim: paint('2'), bold: paint('1'), cyan: paint('36'), yellow: paint('33'), red: paint('31'), userMessage }
 }
 
 /** What kind of streamed output the cursor currently sits after, within one turn. */
 type StreamedKind = 'none' | 'text' | 'reasoning'
 
-/** Squash a value onto one bounded line for inline previews. */
-function oneLine(text: string, max: number): string {
-  const flat = text.replace(/\s+/g, ' ').trim()
-  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat
-}
-
-/** The structural slice of a content block that previews read. */
-interface PreviewBlock {
-  readonly type: string
-  readonly text?: string
-  readonly content?: readonly PreviewBlock[]
-  readonly isError?: boolean
-}
-
-/** Join the text blocks of a message content array, unwrapping tool-result wrappers. */
-function textOf(content: readonly PreviewBlock[]): string {
-  return content.map(block =>
-    block.type === 'text' ? block.text ?? ''
-      : block.type === 'tool-result' ? textOf(block.content ?? [])
-        : '').join('')
-}
-
-/** Whether any tool-result wrapper in the content marks a failed call. */
-function isErrorResult(content: readonly PreviewBlock[]): boolean {
-  return content.some(block => block.type === 'tool-result' && block.isError === true)
-}
-
-/** Render token counts as a compact `1.2k` style figure. */
-function figure(tokens: number): string {
-  return tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : String(tokens)
-}
 
 /**
  * The live event renderer for one agent's session: a stateful projection of
@@ -270,15 +261,6 @@ class Renderer {
   }
 }
 
-/** The REPL's slash-command help, shown by `/help` and on unknown commands. */
-const COMMANDS = `  /help      show this help
-  /model     show the provider route and model this agent uses
-  /session   show the session id and working directory
-  /exit      flush the session and leave (Ctrl+D at the prompt does the same)
-Other /commands dispatch to the plugin command registry (listed below when composed).
-While the agent is running: a typed line steers the nearest step, Ctrl+C cancels the turn.
-When the agent asks a question or requests approval, the prompt switches to that decision.`
-
 function tuiAgentRequest(selection: NonNullable<ModelSelectionRef['current']>): CreateAgentOptions {
   return {
     sessionId: SessionId(`session-${randomUUID()}`),
@@ -294,6 +276,34 @@ async function createTuiAgent(agents: AgentRegistry, selection: NonNullable<Mode
   const handle = await agents.create(tuiAgentRequest(selection))
   await handle.agent.whenIdle()
   return handle.agent
+}
+
+/** Readline-backed surface for pipes, redirects, dumb terminals, and snapshots. */
+class PlainSurface implements SessionSurface {
+  constructor(
+    private readonly rl: Interface,
+    private readonly io: TuiIo,
+    private readonly ui: Palette,
+  ) {}
+
+  close(): void {
+    this.rl.close()
+  }
+
+  write(text: string, tone: NoticeTone = 'normal'): void {
+    const paint = tone === 'dim' ? this.ui.dim : tone === 'error' ? this.ui.red : (value: string): string => value
+    this.io.stdout.write(`${paint(text)}\n`)
+  }
+
+  setBusy(_busy: boolean): void {}
+
+  prompt(): void {
+    this.rl.prompt()
+  }
+
+  showFirstPrompt(text: string): void {
+    this.io.stdout.write(`${this.ui.cyan('› ')}${text}\n`)
+  }
 }
 
 /**
@@ -323,196 +333,73 @@ async function run(ctx: Context, firstPrompt: string, io: TuiIo): Promise<void> 
   const agent = await createTuiAgent(agentRegistry, selection)
 
   const ui = palette()
-  const renderer = new Renderer(io, ui)
-  ctx.on('session/event', (session: Session, event: SessionEvent) => {
-    if (session.id !== agent.session.id) return
-    renderer.render(event)
-  })
-
-  io.stdout.write(`${ui.bold('dsh')} ${ui.dim('·')} ${selection.provider}/${selection.model}\n`)
-  io.stdout.write(ui.dim(`${process.cwd()} · /help for commands\n\n`))
-
-  const rl = createInterface({ input: internals.stdin, output: internals.stdout, prompt: ui.cyan('› '), historySize: 500 })
-
-  // This terminal is the deployment's interaction surface: ask_user_question,
-  // plan review, and tool approvals prompt through the same readline.
-  const prompter = new Prompter(rl, { stdout: io.stdout, dim: ui.dim, bold: ui.bold, cyan: ui.cyan, yellow: ui.yellow })
-  installInteraction(ctx, agent, prompter)
-
   const commandRuntime = ctx.get('commands')
-  loop(agent, rl, io, ui, {
-    firstPrompt,
+  const hooks: SessionDriverHooks = {
     flush: () => sessionStore.flush(agent.session),
     release: () => { internals.stdin.unref?.() },
+    exit: (code: number) => { io.exit(code) },
+    error: (text: string) => { io.stderr.write(text) },
     ...commandRuntime === undefined ? {} : {
       commands: {
         list: () => commandRuntime.list(agent),
-        // The REPL has no per-command cancellation surface; the signal never fires.
+        // Slash commands expose no separate cancellation control in either terminal renderer.
         execute: line => commandRuntime.execute(agent, line, new AbortController().signal),
       },
     },
-  })
-}
-
-/** The loop's session-scoped effects beyond the agent handle itself. */
-interface LoopHooks {
-  /** A prompt to submit before the first read; empty means none. */
-  firstPrompt: string
-  /** Flush the session's buffered events to durable storage. */
-  flush(): Promise<unknown>
-  /**
-   * Drop the REPL's event-loop reference on its input stream. The launcher's
-   * completed shutdown ends the process by draining the loop, not by
-   * `process.exit`, so a still-open piped stdin would otherwise hold the
-   * process alive forever after `/exit`.
-   */
-  release(): void
-  /** The registry dispatch for plugin-owned slash commands; absent when the deployment composes none. */
-  commands?: {
-    /** Name-sorted descriptors of the commands this agent can run. */
-    list(): readonly CommandDescriptor[]
-    /** Run one slash-command line; `undefined` means unknown name or invalid syntax. */
-    execute(line: string): Promise<CommandExecution | undefined>
-  }
-}
-
-/**
- * Wire the readline loop over one live agent. Split from {@link run} so the
- * event handlers close over exactly the state they own.
- * @param agent - the live agent this terminal drives.
- * @param rl - the readline interface owning stdin.
- * @param io - process-facing effects.
- * @param ui - the terminal palette.
- * @param hooks - first prompt and the durability flush.
- */
-function loop(agent: Agent, rl: Interface, io: TuiIo, ui: Palette, hooks: LoopHooks): void {
-  let busy = false
-  let closing = false
-
-  // Drains the active turn before flushing, so piped stdin behaves as a
-  // one-shot: the prompt streams its full response before the process exits.
-  // Immediate exits (/exit, /quit) cancel the turn first, making the drain a no-op.
-  const shutdown = (code: number): void => {
-    if (closing) return
-    closing = true
-    rl.close()
-    hooks.release()
-    void agent.whenIdle()
-      .then(() => hooks.flush())
-      .catch((error: unknown) => {
-        io.stderr.write(`dsh: session flush failed: ${error instanceof Error ? error.message : String(error)}\n`)
-      })
-      .finally(() => { io.exit(code) })
   }
 
-  const submit = (text: string): void => {
-    busy = true
-    agent.followup(createUserMessage({
-      content: [{ type: 'text', text }],
-      source: { kind: 'user' },
-    }))
-    void agent.whenIdle().then(() => {
-      busy = false
-      if (!closing) rl.prompt()
+  const interactive = internals.interactive ?? (internals.stdin.isTTY === true
+    && internals.stdout.isTTY === true
+    && process.env.TERM !== 'dumb')
+  if (interactive) {
+    const surface = new InteractiveSession({
+      terminal: internals.terminal(),
+      provider: selection.provider,
+      model: selection.model,
+      sessionId: String(agent.session.id),
+      cwd: process.cwd(),
+      palette: ui,
+      color: colorEnabled(),
+      commands: [
+        { name: 'help', description: 'show commands and keyboard help' },
+        { name: 'model', description: 'show the active provider and model' },
+        { name: 'session', description: 'show the session id and working directory' },
+        { name: 'exit', description: 'flush the session and leave' },
+        ...(commandRuntime?.list(agent) ?? []),
+      ],
     })
-  }
-
-  // Registry commands (e.g. /plan, /compact, /feedback) settle asynchronously;
-  // the prompt returns when the result renders, matching the built-in flow.
-  const dispatch = (line: string): void => {
-    const reprompt = (): void => { if (!busy && !closing) rl.prompt() }
-    const registry = hooks.commands
-    if (registry === undefined) {
-      io.stdout.write(ui.dim(`unknown command ${line}; /help lists commands\n`))
-      reprompt()
-      return
-    }
-    registry.execute(line).then((execution) => {
-      if (execution === undefined) {
-        io.stdout.write(ui.dim(`unknown command ${line}; /help lists commands\n`))
-      } else if (execution.result.kind === 'error') {
-        io.stdout.write(ui.red(`✖ ${execution.result.text}\n`))
-      } else if (execution.result.text !== undefined && execution.result.text !== '') {
-        io.stdout.write(`${execution.result.text}\n`)
-      }
-      reprompt()
-    }, (error: unknown) => {
-      io.stdout.write(ui.red(`✖ ${error instanceof Error ? error.message : String(error)}\n`))
-      reprompt()
+    const driver = new SessionDriver(agent, surface, hooks)
+    surface.attach(driver)
+    ctx.on('session/event', (session: Session, event: SessionEvent) => {
+      if (session.id === agent.session.id) surface.render(event)
     })
-  }
-
-  const command = (line: string): void => {
-    switch (line.split(/\s/, 1)[0]) {
-      case '/help': {
-        io.stdout.write(COMMANDS + '\n')
-        const descriptors = hooks.commands?.list() ?? []
-        if (descriptors.length > 0) {
-          io.stdout.write(ui.dim('plugin commands:\n'))
-          for (const descriptor of descriptors) {
-            const pad = ' '.repeat(Math.max(1, 10 - descriptor.name.length))
-            io.stdout.write(`  /${descriptor.name}${pad}${ui.dim(descriptor.description)}\n`)
-          }
-        }
-        break
-      }
-      case '/model':
-        io.stdout.write(`${agent.options.provider}/${agent.options.model}\n`)
-        break
-      case '/session':
-        io.stdout.write(`${agent.session.id}\n${process.cwd()}\n`)
-        break
-      case '/exit':
-      case '/quit':
-        if (busy) agent.cancel({ kind: 'user' })
-        shutdown(0)
-        return
-      default:
-        dispatch(line)
-        return
-    }
-    if (!busy) rl.prompt()
-  }
-
-  rl.on('line', (line: string) => {
-    const text = line.trim()
-    if (text === '') {
-      if (!busy && !closing) rl.prompt()
-      return
-    }
-    if (text.startsWith('/')) {
-      command(text)
-      return
-    }
-    if (busy) {
-      agent.steer(createUserMessage({
-        content: [{ type: 'text', text }],
-        source: { kind: 'user' },
-      }))
-      io.stdout.write(ui.dim('(steering queued for the nearest step)\n'))
-      return
-    }
-    submit(text)
-  })
-
-  rl.on('SIGINT', () => {
-    if (busy) {
-      agent.cancel({ kind: 'user' })
-      return
-    }
-    io.stdout.write('\n')
-    shutdown(0)
-  })
-
-  // Ctrl+D at the prompt, or the input stream ending (piped stdin drained).
-  rl.on('close', () => { shutdown(0) })
-
-  if (hooks.firstPrompt !== '') {
-    io.stdout.write(`${ui.cyan('› ')}${hooks.firstPrompt}\n`)
-    submit(hooks.firstPrompt)
+    installInteraction(ctx, agent, new Prompter(surface, surface.prompterUi))
+    ctx.effect(() => () => { surface.close() }, 'tui-runner: interactive terminal')
+    surface.start()
+    driver.start(firstPrompt)
     return
   }
-  rl.prompt()
+
+  const renderer = new Renderer(io, ui)
+  ctx.on('session/event', (session: Session, event: SessionEvent) => {
+    if (session.id === agent.session.id) renderer.render(event)
+  })
+  io.stdout.write(`${ui.bold('dsh')} ${ui.dim('·')} ${selection.provider}/${selection.model}\n`)
+  io.stdout.write(ui.dim(`${process.cwd()} · /help for commands\n\n`))
+  const rl = createInterface({ input: internals.stdin, output: internals.stdout, prompt: ui.cyan('› '), historySize: 500 })
+  const surface = new PlainSurface(rl, io, ui)
+  const driver = new SessionDriver(agent, surface, hooks)
+  installInteraction(ctx, agent, new Prompter(rl, {
+    stdout: io.stdout,
+    dim: ui.dim,
+    bold: ui.bold,
+    cyan: ui.cyan,
+    yellow: ui.yellow,
+  }))
+  rl.on('line', (line) => { driver.line(line) })
+  rl.on('SIGINT', () => { driver.interrupt() })
+  rl.on('close', () => { driver.end() })
+  driver.start(firstPrompt)
 }
 
 /** Report an unexpected direct-driver failure and request a failing exit. */

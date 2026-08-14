@@ -1,12 +1,10 @@
 /**
  * Terminal prompting for out-of-band human decisions: user questions
  * (`ask_user_question`, plan review) and one-shot tool approvals. Prompts are
- * serialized over the REPL's shared readline so parallel asks never
- * interleave, and every wait withdraws on its request's abort signal.
- *
- * `readline.question` routes the next input line to its own callback instead
- * of the REPL's `line` listener, so a pending prompt cannot be misread as
- * steering input.
+ * serialized over the active terminal input owner so parallel asks never
+ * interleave, and every wait withdraws on its request's abort signal. A TTY
+ * routes answers through the Pi editor; the plain renderer delegates input
+ * ownership to `readline.question`.
  *
  * @module @deepseek-ai/dsh-tui/src/prompter
  */
@@ -27,6 +25,39 @@ export interface PrompterUi {
   bold(text: string): string
   cyan(text: string): string
   yellow(text: string): string
+}
+
+/** One serialized line-input implementation used by the terminal prompter. */
+export interface PromptInput {
+  /** Read a trimmed answer, or return `undefined` when the request is withdrawn. */
+  read(query: string, signal: AbortSignal | undefined): Promise<string | undefined>
+}
+
+/** Adapt Node readline's question ownership to the renderer-neutral prompt input. */
+class ReadlinePromptInput implements PromptInput {
+  constructor(private readonly rl: Interface) {}
+
+  read(query: string, signal: AbortSignal | undefined): Promise<string | undefined> {
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted === true) {
+        resolve(undefined)
+        return
+      }
+      const onAbort = (): void => { resolve(undefined) }
+      signal?.addEventListener('abort', onAbort, { once: true })
+      const onAnswer = (answer: string): void => {
+        signal?.removeEventListener('abort', onAbort)
+        resolve(answer.trim())
+      }
+      try {
+        if (signal === undefined) this.rl.question(query, onAnswer)
+        else this.rl.question(query, { signal }, onAnswer)
+      } catch (error: unknown) {
+        signal?.removeEventListener('abort', onAbort)
+        reject(error instanceof Error ? error : new Error(String(error)))
+      }
+    })
+  }
 }
 
 /**
@@ -59,12 +90,16 @@ export function decodeAnswer(item: AskUserQuestionItem, line: string): AskUserQu
   return { id: item.id, selected, ...custom.length > 0 ? { custom: custom.join(', ') } : {} }
 }
 
-/** Serialized out-of-band prompting over the REPL's readline. */
+/** Serialized out-of-band prompting over the active renderer's input owner. */
 export class Prompter {
   /** Tail of the prompt queue; each ask chains behind the previous settlement. */
   private queue: Promise<unknown> = Promise.resolve()
 
-  constructor(private readonly rl: Interface, private readonly ui: PrompterUi) {}
+  private readonly input: PromptInput
+
+  constructor(input: Interface | PromptInput, private readonly ui: PrompterUi) {
+    this.input = 'read' in input ? input : new ReadlinePromptInput(input)
+  }
 
   /** Chain one prompting job behind every earlier one, regardless of their outcomes. */
   private enqueue<T>(job: () => Promise<T>): Promise<T> {
@@ -80,25 +115,7 @@ export class Prompter {
    * @returns the trimmed line, or `undefined` when the wait was withdrawn.
    */
   private read(query: string, signal: AbortSignal | undefined): Promise<string | undefined> {
-    return new Promise((resolve, reject) => {
-      if (signal?.aborted === true) {
-        resolve(undefined)
-        return
-      }
-      const onAbort = (): void => { resolve(undefined) }
-      signal?.addEventListener('abort', onAbort, { once: true })
-      const onAnswer = (answer: string): void => {
-        signal?.removeEventListener('abort', onAbort)
-        resolve(answer.trim())
-      }
-      try {
-        if (signal === undefined) this.rl.question(query, onAnswer)
-        else this.rl.question(query, { signal }, onAnswer)
-      } catch (error: unknown) {
-        signal?.removeEventListener('abort', onAbort)
-        reject(error instanceof Error ? error : new Error(String(error)))
-      }
-    })
+    return this.input.read(query, signal)
   }
 
   /**
