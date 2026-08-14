@@ -63,6 +63,16 @@ export interface InstalledEntry {
   readonly packageName: string
   /** Path to the executable inside that package. */
   readonly binPath: string
+  /** Product paths that must start successfully from the installed package tree. */
+  readonly probes: readonly InstalledProbe[]
+}
+
+/** One installed executable invocation and the output that proves it reached the selected app. */
+export interface InstalledProbe {
+  /** Arguments passed after the executable path. */
+  readonly args: readonly string[]
+  /** Text the successful stdout must contain. */
+  readonly stdoutIncludes: string
 }
 
 /** A release sequence: its members, its version baseline, and its tag naming. */
@@ -228,7 +238,11 @@ class DshFamily extends ReleaseFamily {
     validateTarballPayload(files, member.name)
   }
 
-  readonly installedEntry = { packageName: '@deepseek-ai/dsh', binPath: 'lib/bin.js' }
+  readonly installedEntry = {
+    packageName: '@deepseek-ai/dsh',
+    binPath: 'lib/bin.js',
+    probes: [{ args: ['--profile', 'tui', '--help'], stdoutIncludes: 'dsh --profile tui' }],
+  }
 }
 
 /** `vendor/*`: every package keeps its own version line, so every package has its own tag. */
