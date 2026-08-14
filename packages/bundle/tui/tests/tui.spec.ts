@@ -216,6 +216,12 @@ describe('tui runner', () => {
     expect(test.out()).toContain('test-provider/test-model')
     expect(test.out()).toContain('─'.repeat(20))
 
+    test.keys('/')
+    await until(() => test.out().includes('show commands and keyboard help'))
+    expect(test.out()).toContain('show the active provider and model')
+    expect(test.out()).toContain('show the session id and working directory')
+    test.keys('\u001B\u007F')
+
     test.keys('hello from editor\n')
     await new Promise(resolve => setTimeout(resolve, 25))
     await until(() => test.out().includes('Interactive answer'))

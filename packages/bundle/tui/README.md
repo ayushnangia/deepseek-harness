@@ -15,7 +15,7 @@ The main-screen TTY layout preserves ordinary terminal scrollback and keeps four
 
 - A compact header identifies the Harness, provider/model route, working directory, and essential keys.
 - A conversation transcript projects committed `session/event` records. User prompts use a distinct block; assistant Markdown streams in place; reasoning is dimmed; tool calls settle into their result previews; turn, plan-mode, and compaction notices remain visible.
-- A bordered multiline editor provides prompt history, bracketed-paste handling, slash-command autocomplete, and path completion. Enter submits; Shift+Enter inserts a newline.
+- A bordered multiline editor provides prompt history, bracketed-paste handling, slash-command autocomplete, and path completion. Typing `/` at an empty prompt immediately opens the command menu with descriptions; keep typing to filter it, use the arrow keys to select, and press Enter to complete. Enter submits ordinary prompts; Shift+Enter inserts a newline.
 - A responsive footer shows the working directory, provider/model, session id, cumulative token use, and live `ready`/`working`/decision state.
 
 The renderer does not invent model history: conversation content comes from the durable log. Header, footer, command results, and interaction prompts are terminal presentation around that projection.

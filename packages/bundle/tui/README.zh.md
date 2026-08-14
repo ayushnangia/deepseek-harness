@@ -15,7 +15,7 @@ dsh --profile tui "run the tests"     # start with a first prompt already submit
 
 - 紧凑的页眉标明 Harness、provider/model 路由、工作目录与主要按键。
 - 对话记录投影已提交的 `session/event`。用户提示使用独立区块；assistant Markdown 原位流式更新；推理内容以暗淡样式显示；工具调用在结果到达后补充预览；轮次、计划模式与压缩提示保持可见。
-- 带边框的多行编辑器提供提示历史、bracketed paste（括号粘贴）处理、斜杠命令自动补全与路径补全。Enter 提交；Shift+Enter 插入换行。
+- 带边框的多行编辑器提供提示历史、bracketed paste（括号粘贴）处理、斜杠命令自动补全与路径补全。在空白提示中输入 `/` 会立即打开带说明的命令菜单；继续输入可过滤，方向键用于选择，Enter 用于补全。Enter 提交普通提示；Shift+Enter 插入换行。
 - 响应式页脚显示工作目录、provider/model、会话 id、累计 token 用量，以及实时的 `ready`／`working`／待决策状态。
 
 渲染器不会编造模型历史：对话内容来自持久日志。页眉、页脚、命令结果与交互提示是围绕该投影的终端呈现。

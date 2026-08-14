@@ -159,7 +159,10 @@ export class InteractiveSession implements SessionSurface, PromptInput {
       strikethrough: text => ui.dim(text),
       underline: text => ui.cyan(text),
     }
-    this.editor = new Editor(this.tui, editorTheme, { paddingX: 1 })
+    this.editor = new Editor(this.tui, editorTheme, {
+      paddingX: 1,
+      autocompleteMaxVisible: Math.max(5, Math.min(12, options.commands.length)),
+    })
     this.editor.setAutocompleteProvider(new CombinedAutocompleteProvider([...options.commands], options.cwd))
     this.footer = new Footer(options.cwd, `${options.provider}/${options.model}`, options.sessionId, ui)
     this.prompterUi = {
